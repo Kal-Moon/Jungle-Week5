@@ -3,6 +3,7 @@
  *
  * [시나리오]
  *   아주 작은 GUI 흉내. 각 위젯(Widget)은 힙 객체이며 첫 멤버로 "vtable"
+ *  GUI? 그래픽 사용자 인터페이스. 컴퓨터나 디지털 기기를 아이콘, 버튼, 메뉴 같은 시각적 그래픽 요소로 화면을 구성한 인터페이스
  *   (render/on_event 함수 포인터 묶음)을 가진다. Screen 은 위젯 포인터 배열을
  *   들고 있고, 이벤트를 나눠준 뒤(dispatch) 한 프레임을 그린다(render).
  *
@@ -38,14 +39,20 @@
  *       Screen 쪽에서 closed 위젯을 free 한 뒤 그 슬롯을 NULL 로 만드는 편이 자연스럽습니다.
  *       이후 dispatch/render 루프가 NULL 슬롯을 건너뛰게 하세요. "해제 = 소유 포인터 무효화".
  */
+
+ /*
+ 순서
+ 1. 함수 해석. 무엇이 무엇이고, 어떤 기능을 하는지
+ 2. 함수의 상호작용 생각. 이 함수가 어떤 영향을 주고, 없을 경우 어떤 영향을 미칠지 등 생각
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct Widget Widget;
+typedef struct Widget Widget; //위젯위젯
 
-typedef struct {
-    void (*render)(Widget *self);
+typedef struct {    //VTable 안에 가리키는 함수가 아무것도 반환하지 않은 포인터를 모아둠
+    void (*render)(Widget *self);   
     void (*on_event)(Widget *self, int code);
 } VTable;
 
@@ -76,6 +83,7 @@ static void dialog_render(Widget *self) {
 static void widget_noop_event(Widget *self, int code) { (void)self; (void)code; }
 
 /* 다이얼로그는 이벤트 코드 1(닫기)을 받으면 스스로 정리(파괴)된다 */
+// -> 수정. 정리는 main에서 함(free+NULL)
 static void dialog_on_event(Widget *self, int code);
 
 static const VTable BUTTON_VT = { button_render, widget_noop_event };
@@ -101,9 +109,11 @@ static Widget *widget_new(const VTable *vt, int id, const char *label) {
     return w;
 }
 
+/* 쓸 일이 없어 제거
 static void widget_destroy(Widget *w) {
     free(w);          
 }
+*/
 
 /* ── Screen ──────────────────────────────────────────────────── */
 static void screen_add(Screen *s, Widget *w) {
@@ -113,6 +123,7 @@ static void screen_add(Screen *s, Widget *w) {
 static void screen_dispatch(Screen *s, int code) {
     for (int i = 0; i < s->count; i++) {
         Widget *w = s->items[i];
+        if (w == NULL) continue;
         w->vtbl->on_event(w, code);
     }
 }
@@ -120,14 +131,14 @@ static void screen_dispatch(Screen *s, int code) {
 static void screen_render(Screen *s) {
     for (int i = 0; i < s->count; i++) {
         Widget *w = s->items[i];
-        w->vtbl->render(w);      
+        if (w == NULL) continue; //i=2만 건너뛰게 함. break를 사용할 경우 Label10, Button11만 그려지고 끝남
+        w->vtbl->render(w);      //Segmentation fault. 프로그램이 허용되지 않은 메모리 영역에 접근을 시도하거나, 허용되지 않은 방법으로 메모리 영역에 접근을 시도할 경우 발생함.
     }
 }
 
 static void dialog_on_event(Widget *self, int code) {
     if (code == 1) {
         self->closed = 1;
-        widget_destroy(self);   
     }
 }
 
@@ -159,6 +170,13 @@ int main(void) {
 
     /* TODO 닫힌(closed) 위젯을 여기서 정리(free + 해당 슬롯 NULL)할 필요가 있음 */
 
+    for (int i = 0; i < s.count; i++){
+        Widget *w = s.items[i];
+        if(w->closed == 1){
+            free(w);
+            s.items[i] = NULL;
+        }
+    }
     char *status = app_build_status("dialog closed");
     printf("%s\n", status);
 
