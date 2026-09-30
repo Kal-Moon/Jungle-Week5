@@ -8,16 +8,19 @@
 |---|---|
 | 2026-09-28 | `Screen s = { .count = 0 };` 해석 |
 | 2026-09-29 | `widget_new`, `screen_add`, `screen_render`, `screen_dispatch`, `dialog_on_event`, `app_build_status`, frame 2 크래시 원인까지 해석 |
+| 2026-09-30 | `malloc`/`free` 재사용 과정을 단계별로 다시 이해하고 **버그 수정 완료** (8~9장) |
+
+## 상태: ✅ 해결 완료
+
+수정한 `bug.c`는 경고 없이 빌드되고, 기대 출력대로 정상 종료(0)한다. AddressSanitizer/UBSan 검사에서도 오류가 없다.
 
 ## 다음에 할 것 (여기서부터 시작)
 
-**버그 고치기.** 파일 맨 위 TODO와 `main`의 `/* TODO 닫힌(closed) 위젯을 여기서 정리... */` 주석을 보고 수정한다.
-
-1. `dialog_on_event`에서는 `free` 하지 말고 `closed = 1` 표시만 남긴다.
-2. `main`의 `screen_dispatch(&s, 1);` 뒤에서, `closed`인 위젯을 `free` 하고 **그 슬롯을 `NULL`로** 만든다.
-3. `screen_render`와 `screen_dispatch`가 `NULL` 슬롯을 건너뛰게 한다.
-4. 프로그램 마지막의 `free(s.items[i])` 반복문도 `NULL`이면 괜찮은지 확인한다. (`free(NULL)`은 아무 일도 안 함)
-5. `make`로 빌드해서 크래시 없이 frame 2가 Label/Button/Button만 그리고 0으로 끝나는지 확인한다.
+1. (선택) 수정한 `bug.c`에서 코드와 맞지 않게 된 주석 정리
+   - `dialog_on_event` 선언 위 `/* 다이얼로그는 ... 스스로 정리(파괴)된다 */` → 이제는 `closed` 표시만 하고 정리는 `main`이 한다.
+2. **다음 문제 `02_stack_buffer_overflow`** 시작. 01번과 같은 방식으로 진행한다.
+   - 파일 맨 위 주석의 `[시나리오]`, `[증상]`, `TODO` 먼저 읽기
+   - `main`부터 한 줄씩 해석 → 함수끼리의 상호작용 → 크래시 원인 → 수정
 
 ---
 
@@ -134,3 +137,80 @@ Segmentation fault
 - 화면에 frame 1 출력이 안 보이는 건 `printf`(stdout)가 버퍼에 쌓여 있다가 크래시로 사라졌기 때문. 로그는 `stderr`로 찍어야 한다.
 
 > **크래시는 `screen_render`에서 나지만, 원인은 `dialog_on_event`가 `free`만 하고 `items[2]`를 그대로 둔 것이다.**
+
+## 8. 단계별로 다시 이해한 것 (사물함 비유)
+
+힙 = 사물함 보관소. `malloc` = 빌리기(사물함 **번호**=주소를 받음), `free` = 반납(장부에 "비어 있음"이라고 적을 뿐, 번호를 적어둔 곳은 그대로).
+
+1. **빌림**: 세 번째 `screen_add`의 `widget_new`가 `malloc`으로 6300번을 빌림 → `items[2] = 6300`
+2. **사용**: frame 1 `screen_render` → 6300번은 아직 Dialog → 정상
+3. **반납**: `screen_dispatch` → (`vtbl`의 `on_event` 칸을 통해) `dialog_on_event` → `widget_destroy` → `free(6300)`. **`items[2]`에는 6300이 그대로**
+4. **남이 가져감**: `app_build_status`의 `malloc(40)`이 방금 반납된 **같은 크기** 칸을 다시 줌 → `msg = status = 6300`
+   - 이제 `status`와 `items[2]`가 같은 사물함을 각자 다른 용도로 쓴다고 믿는 상태
+5. **반납한 걸 또 씀**: frame 2 `screen_render`가 `i = 0`부터 돌다가 `i = 2`에서 6300번을 Dialog로 믿고 사용 → 💥
+
+헷갈렸던 점 정리:
+- `DIALOG_VT`는 `screen_add` 때 **실행되지 않는다.** `vtbl`에 "연락처 카드"(주소)를 붙여둘 뿐이고, `screen_render`/`screen_dispatch`가 카드를 보고 호출할 때 실행된다.
+- `screen_dispatch`가 직접 `free`하는 게 아니라, 불린 함수의 사슬 끝(`widget_destroy`)에서 `free`한다.
+- 10, 11, 13은 **반납하지 않았으니** 계속 써도 안전하다. 문제는 `free`를 안 해서가 아니라 **`free`한 뒤에 또 써서** 생긴다.
+- Dialog를 마지막까지 안 지우면 크래시는 안 나지만, frame 2에도 Dialog가 그려진다(기대 동작 위반). 안 쓰는 메모리는 바로 반납하는 게 원칙이다(안 하면 메모리 누수).
+- frame은 창이 아니라 "화면을 한 번 그린 것". 터미널에는 frame 1, 2가 위아래로 이어서 출력된다.
+- `status`는 닫는 일을 하지 않는다. 닫힌 뒤 "dialog closed" 안내 문구를 만들 뿐이다.
+
+## 9. 수정 (해결)
+
+역할을 나눴다: **표시는 위젯이, 정리(`free` + `NULL`)는 `s`를 아는 `main`이, 사용하는 쪽은 `NULL`을 건너뛴다.**
+
+| 위치 | 수정 |
+|---|---|
+| `dialog_on_event` | `widget_destroy(self);` 삭제, `closed = 1`만 남김 |
+| `main`의 TODO 자리 (`screen_dispatch` 뒤, `app_build_status` 앞) | `closed`인 위젯을 `free` + 그 칸을 `NULL` |
+| `screen_render`, `screen_dispatch` | `if (w == NULL) continue;` |
+| `widget_destroy` | 쓰는 곳이 없어져서 `-Wunused-function` 경고 → 주석 처리로 제거 |
+
+```c
+static void dialog_on_event(Widget *self, int code) {
+    if (code == 1) {
+        self->closed = 1;
+    }
+}
+
+// screen_render / screen_dispatch 반복문 안
+Widget *w = s->items[i];
+if (w == NULL) continue;
+
+// main: screen_dispatch(&s, 1); 바로 뒤
+for (int i = 0; i < s.count; i++){
+    Widget *w = s.items[i];
+    if(w->closed == 1){
+        free(w);
+        s.items[i] = NULL;
+    }
+}
+```
+
+수정 후 출력 (종료 코드 0):
+```
+frame 1:
+  Label #10: Welcome
+  [Button #11] "OK"
+  <<Dialog #12>> Are you sure?
+  [Button #13] "Cancel"
+STATUS: dialog closed
+frame 2:
+  Label #10: Welcome
+  [Button #11] "OK"
+  [Button #13] "Cancel"
+```
+
+### 수정하면서 배운 것
+- **`continue` vs `break`**: `continue`는 이번 칸만 건너뛰고 다음 `i`로, `break`는 반복문 전체 종료. `break`를 쓰면 frame 2에 Label 10, Button 11만 그려지고 Cancel이 빠진다.
+- C에는 `next` 명령어가 없다. `w->next`는 `w`의 `next` 칸을 읽는 것이라, `w`가 `NULL`이면 오히려 크래시.
+- **`NULL`을 읽으면(널 포인터 역참조) SIGSEGV.** `NULL`로 지우는 것(반납하는 쪽)과 `NULL`을 건너뛰는 것(사용하는 쪽)을 **둘 다** 해야 한다.
+- `screen_dispatch`는 지금 `main`에서는 `NULL`이 생기기 전에만 불리지만, 이벤트가 또 오면 크래시하므로 검사가 필요하다. 원칙: **`NULL`이 될 수 있는 칸을 꺼내 쓰는 곳은 전부 검사.**
+- (선택) 정리 반복문 조건을 `w != NULL && w->closed == 1`로 쓰면 여러 번 실행해도 안전하다. `&&`는 왼쪽이 거짓이면 오른쪽을 실행하지 않는다.
+- **`free(NULL)`은 아무 일도 안 한다**(C 표준). 그래서 마지막 `free(s.items[i])` 반복문은 그대로 둬도 된다.
+- 수정 전이었다면 마지막에 `free(status)`와 `free(items[2])`가 **같은 6300번을 또 반납** → **Double Free**(`04_double_free` 주제). `NULL`로 지우는 것 하나로 UAF와 Double Free를 둘 다 막았다.
+- `widget_destroy`는 지워도 되지만, 남겨두면 위젯 구조가 바뀌어도 한 곳만 고치면 되고 gdb에서 `break widget_destroy`로 잡을 수 있다는 장점이 있다(`widget_new`와 짝).
+
+> **"해제 = 소유 포인터 무효화"**: 반납했으면, 그 번호를 적어둔 곳도 같이 지운다.
