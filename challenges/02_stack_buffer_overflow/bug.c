@@ -54,7 +54,7 @@
 #include <stdlib.h>
 
 #define ROWS 14
-enum { SIZE = ROWS * (ROWS + 1) / 2 };   /* 0..ROWS-1 행을 담는 정확한 크기 */
+enum { SIZE = ROWS * (ROWS + 1) / 2 };   /* 0..ROWS-1 행을 담는 정확한 크기 */ //105
 
 /* 행 i, 열 j 의 삼각 인덱스 */
 static int tri_index(int i, int j) {
@@ -63,8 +63,8 @@ static int tri_index(int i, int j) {
 
 /* 파스칼의 삼각형을 tri[] 에 채운다. */
 static void build_pascal(int *tri, int rows) {
-    for (int i = 0; i <= rows; i++) {
-        for (int j = 0; j <= i; j++) {
+    for (int i = 0; i < rows; i++) {                //i <= row를 할 경우 i = 14, j = 0 일 경우, 105가 나오고 SIZE가 105로 유효 인덱스는 104라 버퍼 오버플로우가 됌
+        for (int j = 0; j <= i; j++) {              //이에 i < row를 하면 i = 13, j = 13 => 13*14/2 + 13 = 104로 인덱스 범위 안에 해당되어 버퍼 오버플로우가 안 일어남
             int idx = tri_index(i, j);
             if (j == 0 || j == i) {
                 tri[idx] = 1;                         /* 양 끝은 1 */
